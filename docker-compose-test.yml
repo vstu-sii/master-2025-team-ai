@@ -1,0 +1,101 @@
+version: "3"
+
+services:
+
+  fastapi:
+    build:
+        context: .
+        dockerfile: ./fastapi_service/Dockerfile
+    environment:
+      - USER=${DAGSHUB_USER}
+      - PASSWORD=${DAGSHUB_PASSWORD}
+      - TOKEN=${DAGSHUB_TOKEN}
+      - URI=${DAGSHUB_URI}
+      - NAME_MODEL=${DAGSHUB_NAME_MODEL}
+      - VERSION_MODEL=${DAGSHUB_VERSION_MODEL}
+    ports:
+      - 80:80
+    restart: always
+
+  # rabbitmqServer:
+  #   container_name: rabbitmqServer
+  #   image: rabbitmq:3.10.7-management
+  #   hostname: "rabbitmqhost"
+  #   restart: always
+  #   environment:
+  #     - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+  #     - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+  #     - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
+  #   volumes:
+  #     - ./rabbitmq:/var/lib/rabbitmq
+  #     - ./rabbitmq/log/:/var/log/rabbitmq/
+  #   ports:
+  #     - 5672:5672    #amqp
+  #     - 15672:15672  #http
+  #     - 15692:15692  #prometheus
+  #   healthcheck:
+  #     test: rabbitmq-diagnostics -q status && rabbitmq-diagnostics -q check_local_alarms
+  #     interval: 30s
+  #     timeout: 3s
+  #     retries: 3
+
+  # rmq_consumer_1:
+  #   tty: true
+  #   container_name: rmq_consumer_1
+  #   build:
+  #       context: .
+  #       dockerfile: ./rabbit_consumer/Dockerfile
+  #   restart: always
+  #   depends_on:
+  #     rabbitmqServer:
+  #       condition: service_healthy
+  #   environment:
+  #     - PROD_NUM=1
+  #     - AWS_ACCESS_KEY_ID=${AWS_ACCESS_WRITE_KEY_ID}
+  #     - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_WRITE_KEY}
+  #     - BUCKET_ID=${BUCKET_ID}
+  #     - HOST=${HOST}
+  #     - PORT=${PORT}
+  #     - USER=${USER}
+  #     - PASSWORD=${PASSWORD}
+  #     - EXCHANGE=${EXCHANGE}
+  #     - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+  #     - QUEUE_REQUEST=${QUEUE_REQUEST}
+  #     - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+  #     - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_CONSUMER}
+  #     - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_CONSUMER}
+  #   volumes:
+  #     - ./rabbit_consumer/:/workspace/rabbit_consumer/
+  #   command: python3 /workspace/rabbit_consumer/rpc_consumer.py
+
+  # alertmanager:
+  #   container_name: alertmanager
+  #   image: prom/alertmanager:v0.25.0
+  #   ports:
+  #     - 9093:9093
+  #   volumes:
+  #     - ./config_files/alertmanager/config.yaml:/etc/alertmanager/config.yaml
+  #   command:
+  #     - '--config.file=/etc/alertmanager/config.yaml'
+  #     - '--storage.path=/alertmanager'
+  #     - '--web.external-url=${SERVER_ALERTMANAGER_ADDRESS:-http://localhost:9093}'
+  #   restart: always
+
+  # prometheus:
+  #   image: prom/prometheus
+  #   depends_on:
+  #     - airflow-webserver
+  #     - airflow-scheduler
+  #     - airflow-init
+  #     - rabbitmqServer
+  #     - rmq_consumer_1
+  #     - rmq_consumer_2
+  #     - rmq_producer_1
+  #     - rmq_producer_2
+  #     - rmq_producer_3
+  #   volumes:
+  #     - "./prometheus.yml:/etc/prometheus/prometheus.yml"
+  #   networks:
+  #     - localprom
+  #   ports:
+  #     - 9090:9090

@@ -1,0 +1,274 @@
+version: "3"
+
+x-airflow-common:
+  &airflow-common
+  build:
+      context: .
+      dockerfile: ./airflow_service/Dockerfile
+  image: ${AIRFLOW_IMAGE_NAME:-extending_airflow:latest}
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+  volumes:
+    - ./airflow_service/dags:/opt/airflow/dags
+    - ./airflow_service/logs:/opt/airflow/logs
+    - ./airflow_service/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_READ_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_READ_KEY}
+      DAGSHUB_USER: ${DAGSHUB_USER}
+      DAGSHUB_PASS: ${DAGSHUB_USER}
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+
+  rabbitmqServer:
+    container_name: rabbitmqServer
+    image: rabbitmq:3.10.7-management
+    hostname: "rabbitmqhost"
+    restart: always
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
+    depends_on:
+      - airflow-webserver
+      - airflow-scheduler
+      - airflow-init
+    volumes:
+      - ./rabbitmq:/var/lib/rabbitmq
+      - ./rabbitmq/log/:/var/log/rabbitmq/
+    ports:
+      - 5672:5672    #amqp
+      - 15672:15672  #http
+      - 15692:15692  #prometheus
+    healthcheck:
+      test: rabbitmq-diagnostics -q status && rabbitmq-diagnostics -q check_local_alarms
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  rmq_producer_1:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_1
+    environment:
+      - PROD_NUM=1
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_producer_2:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_2
+    environment:
+      - PROD_NUM=2
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_producer_3:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_3
+    environment:
+      - PROD_NUM=3
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_consumer_1:
+    tty: true
+    container_name: rmq_consumer_1
+    build:
+        context: .
+        dockerfile: ./rabbit_consumer/Dockerfile
+    restart: always
+    depends_on:
+      rabbitmqServer:
+        condition: service_healthy
+    environment:
+      - PROD_NUM=1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_WRITE_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_WRITE_KEY}
+      - BUCKET_ID=${BUCKET_ID}
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_CONSUMER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_CONSUMER}
+    volumes:
+      - ./rabbit_consumer/:/workspace/rabbit_consumer/
+    command: python3 /workspace/rabbit_consumer/rpc_consumer.py
+
+  rmq_consumer_2:
+    tty: true
+    container_name: rmq_consumer_2
+    build:
+        context: .
+        dockerfile: ./rabbit_consumer/Dockerfile 
+    restart: always
+    depends_on:
+      rabbitmqServer:
+        condition: service_healthy
+    environment:
+      - PROD_NUM=2
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_WRITE_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_WRITE_KEY}
+      - BUCKET_ID=${BUCKET_ID}
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_CONSUMER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_CONSUMER}
+    volumes:
+      - ./rabbit_consumer/:/workspace/rabbit_consumer/
+    command: python3 /workspace/rabbit_consumer/rpc_consumer.py
+
+  fastapi:
+    build:
+        context: .
+        dockerfile: ./fastapi_service/Dockerfile
+    environment:
+      - USER=${DAGSHUB_USER}
+      - PASSWORD=${DAGSHUB_PASSWORD}
+      - TOKEN=${DAGSHUB_TOKEN}
+      - URI=${DAGSHUB_URI}
+      - NAME_MODEL=${DAGSHUB_NAME_MODEL}
+      - VERSION_MODEL=${DAGSHUB_VERSION_MODEL}
+    depends_on:
+      - airflow-webserver
+      - airflow-scheduler
+      - airflow-init
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+      - rmq_producer_1
+      - rmq_producer_2
+      - rmq_producer_3
+    ports:
+      - 80:80
+    restart: always
+
+volumes:
+  postgres-db-volume:

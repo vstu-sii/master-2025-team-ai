@@ -1,0 +1,112 @@
+version: "3"
+
+x-airflow-common:
+  &airflow-common
+  build:
+    args:
+      - DAGSHUB_USER=${DAGSHUB_USER}
+      - DAGSHUB_PASSWORD=${DAGSHUB_PASSWORD}
+      - DAGSHUB_TOKEN=${DAGSHUB_TOKEN}
+    context: .
+    dockerfile: ./airflow_service/Dockerfile
+  image: ${AIRFLOW_IMAGE_NAME:-extending_airflow:latest}
+  environment:
+    &airflow-common-env
+    DAGSHUB_USER: ${DAGSHUB_USER}
+    DAGSHUB_PASSWORD: ${DAGSHUB_PASSWORD}
+    DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+  volumes:
+    - ./airflow_service/dags:/opt/airflow/dags
+    - ./airflow_service/logs:/opt/airflow/logs
+    - ./airflow_service/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
+
+services:
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: >
+      sh -c "scheduler &&
+             export MLFLOW_TRACKING_USERNAME=${DAGSHUB_USER} &&
+             export MLFLOW_TRACKING_PASSWORD=${DAGSHUB_PASSWORD}"
+    environment:
+      <<: *airflow-common-env
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BUCKET_ID: ${BUCKET_ID}
+      BASE_DATA_DIR: ${BASE_DATA_DIR}
+      DAGSHUB_USER: ${DAGSHUB_USER}
+      DAGSHUB_PASSWORD: ${DAGSHUB_PASSWORD}
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      sh -c "version &&
+             export MLFLOW_TRACKING_USERNAME=${DAGSHUB_USER} &&
+             export MLFLOW_TRACKING_PASSWORD=${DAGSHUB_PASSWORD}"
+    environment:
+      <<: *airflow-common-env
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BUCKET_ID: ${BUCKET_ID}
+      BASE_DATA_DIR: ${BASE_DATA_DIR}
+      DAGSHUB_USER: ${DAGSHUB_USER}
+      DAGSHUB_PASSWORD: ${DAGSHUB_PASSWORD}
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+
+  rmq_producer_1:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_1
+
+  rmq_producer_2:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_2
+
+  rmq_producer_3:
+    tty: true
+    build:
+        context: .
+        dockerfile: ./rabbit_producer/Dockerfile
+    container_name: rmq_producer_3
+
+  rmq_consumer_1:
+    tty: true
+    container_name: rmq_consumer_1
+    build:
+        context: .
+        dockerfile: ./rabbit_consumer/Dockerfile
+
+  rmq_consumer_2:
+    tty: true
+    container_name: rmq_consumer_2
+    build:
+        context: .
+        dockerfile: ./rabbit_consumer/Dockerfile 
+
+  fastapi:
+    build:
+        context: .
+        dockerfile: ./fastapi_service/Dockerfile

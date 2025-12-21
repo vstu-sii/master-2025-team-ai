@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.devcontainer
+*.erlang.cookie
+*.cookie
+*.o
+*.env
+*.venv
+*.log
+*.idea
+# *.github
+*.vscode
+rabbitmq/*
+mnesia/
+unit_number_*
+airflow-data/
+logs/*
+postgres-db-volume/
+plugins/*
+docker_hub_pass.txt
