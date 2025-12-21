@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Json</title>
+    <link href="{{ url_for('static', path='/css/main.css') }}" rel="stylesheet">
+    <script>
+        async function send(){
+     
+            // получаем введеные в поля имя и возраст
+            const json_text = document.getElementById("json_text").value;
+     
+            // отправляем запрос
+            const response = await fetch("/predict/", {
+                    method: "POST",
+                    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+                    body: JSON.stringify({ 
+                        json_list: json_text
+                    })
+                });
+                if (response.ok) {
+                    const data = await response.json(); 
+                    // document.getElementById("message").textContent = data.message;
+                    window.location.href = "/predict/";
+                    console.log(data);
+                }
+                else
+                    console.log(response);
+        }
+    </script>
+</head>
+<body>
+    <form method="post" action="/predict/"  enctype="">
+        <p>Input json like object</p>
+
+        <div class="text_form">
+            <p><textarea id="json_list" name="json_list"></textarea></p>
+        </div>
+
+        <button onclick="send()">send</button>
+    </form>
+</body>
+</html>

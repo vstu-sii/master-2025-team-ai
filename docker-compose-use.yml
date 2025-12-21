@@ -1,0 +1,347 @@
+version: "3"
+
+x-airflow-common:
+  &airflow-common
+  image: ${DOCKER_HUB_USER}/pste-service-airflow:v1-release
+  command: >
+      sh -c "export MLFLOW_TRACKING_USERNAME=${DAGSHUB_USER} &&
+             export MLFLOW_TRACKING_PASSWORD=${DAGSHUB_PASSWORD}"
+  environment:
+    &airflow-common-env
+    DAGSHUB_USER: ${DAGSHUB_USER}
+    DAGSHUB_PASS: ${DAGSHUB_PASSWORD}
+    DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: 10
+  volumes:
+    - ./airflow_service/dags:/opt/airflow/dags
+    - ./airflow_service/logs:/opt/airflow/logs
+    - ./airflow_service/plugins:/opt/airflow/plugins
+  user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    environment:
+      <<: *airflow-common-env
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BUCKET_ID: ${BUCKET_ID}
+      BASE_DATA_DIR: ${BASE_DATA_DIR}
+      DAGSHUB_USER: ${DAGSHUB_USER}
+      DAGSHUB_PASSWORD: ${DAGSHUB_PASSWORD}
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+
+  airflow-init:
+    <<: *airflow-common
+    command: >
+      sh -c "version &&
+             export MLFLOW_TRACKING_USERNAME=${DAGSHUB_USER} &&
+             export MLFLOW_TRACKING_PASSWORD=${DAGSHUB_PASSWORD}"
+    environment:
+      <<: *airflow-common-env
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      BUCKET_ID: ${BUCKET_ID}
+      BASE_DATA_DIR: ${BASE_DATA_DIR}
+      DAGSHUB_USER: ${DAGSHUB_USER}
+      DAGSHUB_PASSWORD: ${DAGSHUB_PASSWORD}
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+
+  rabbitmqServer:
+    container_name: rabbitmqServer
+    image: rabbitmq:3.10.7-management
+    hostname: "rabbitmqhost"
+    restart: always
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+      - RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-rabbit log_levels [{connection,error},{default,error}] disk_free_limit 2147483648
+    depends_on:
+      - airflow-webserver
+      - airflow-scheduler
+      - airflow-init
+    volumes:
+      - ./rabbitmq:/var/lib/rabbitmq
+      - ./rabbitmq/log/:/var/log/rabbitmq/
+    ports:
+      - 5672:5672    #amqp
+      - 15672:15672  #http
+      - 15692:15692  #prometheus
+    healthcheck:
+      test: rabbitmq-diagnostics -q status && rabbitmq-diagnostics -q check_local_alarms
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  rmq_producer_1:
+    tty: true
+    container_name: rmq_producer_1
+    image: ${DOCKER_HUB_USER}/pste-service-rmq-producer-1:v1-release
+    environment:
+      - PROD_NUM=1
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_producer_2:
+    tty: true
+    container_name: rmq_producer_2
+    image: ${DOCKER_HUB_USER}/pste-service-rmq-producer-2:v1-release
+    environment:
+      - PROD_NUM=2
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_producer_3:
+    tty: true
+    container_name: rmq_producer_3
+    image: ${DOCKER_HUB_USER}/pste-service-rmq-producer-3:v1-release
+    environment:
+      - PROD_NUM=3
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_PRODUCER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_PRODUCER}
+    depends_on:
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+    volumes:
+      - ./rabbit_producer/:/workspace/rabbit_producer/
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+    command: python3 /workspace/rabbit_producer/rpc_producer.py
+
+  rmq_consumer_1:
+    tty: true
+    container_name: rmq_consumer_1
+    image: ${DOCKER_HUB_USER}/pste-service-rmq-consumer-1:v1-release
+    restart: always
+    depends_on:
+      rabbitmqServer:
+        condition: service_healthy
+    environment:
+      - PROD_NUM=1
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BUCKET_ID=${BUCKET_ID}
+      - BASE_DATA_DIR=${BASE_DATA_DIR}
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_CONSUMER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_CONSUMER}
+    volumes:
+      - ./rabbit_consumer/:/workspace/rabbit_consumer/
+    command: python3 /workspace/rabbit_consumer/rpc_consumer.py
+
+  rmq_consumer_2:
+    tty: true
+    container_name: rmq_consumer_2
+    image: ${DOCKER_HUB_USER}/pste-service-rmq-consumer-2:v1-release
+    restart: always
+    depends_on:
+      rabbitmqServer:
+        condition: service_healthy
+    environment:
+      - PROD_NUM=2
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - BUCKET_ID=${BUCKET_ID}
+      - BASE_DATA_DIR=${BASE_DATA_DIR}
+      - HOST=${HOST}
+      - PORT=${PORT}
+      - USER=${USER}
+      - PASSWORD=${PASSWORD}
+      - EXCHANGE=${EXCHANGE}
+      - EXCHANGE_TYPE=${EXCHANGE_TYPE}
+      - QUEUE_REQUEST=${QUEUE_REQUEST}
+      - QUEUE_RESPONSE=${QUEUE_RESPONSE}
+      - ROUTING_KEY_REQUEST=${ROUTING_KEY_REQUEST_CONSUMER}
+      - ROUTING_KEY_RESPONSE=${ROUTING_KEY_RESPONSE_CONSUMER}
+    volumes:
+      - ./rabbit_consumer/:/workspace/rabbit_consumer/
+    command: python3 /workspace/rabbit_consumer/rpc_consumer.py
+
+  fastapi:
+    container_name: fastapi
+    image: ${DOCKER_HUB_USER}/pste-service-fastapi:v1-release
+    environment:
+      - USER=${DAGSHUB_USER}
+      - PASSWORD=${DAGSHUB_PASSWORD}
+      - TOKEN=${DAGSHUB_TOKEN}
+      - URI=${DAGSHUB_URI}
+      - NAME_MODEL=${DAGSHUB_NAME_MODEL}
+      - VERSION_MODEL=${DAGSHUB_VERSION_MODEL}
+    depends_on:
+      - airflow-webserver
+      - airflow-scheduler
+      - airflow-init
+      - rabbitmqServer
+      - rmq_consumer_1
+      - rmq_consumer_2
+      - rmq_producer_1
+      - rmq_producer_2
+      - rmq_producer_3
+    ports:
+      - 80:80
+    # restart: always
+
+  statsd-exporter:
+    image: prom/statsd-exporter:v0.25.0
+    container_name: statsd-exporter
+    volumes:
+      - ./config_files/statsd/statsd.yaml:/home/statsd-mapping-configs.yaml
+    entrypoint: ["/bin/sh", "-c", "--"]
+    command: ["statsd_exporter --statsd.listen-udp=:9125 --web.listen-address=:9102 --log.level debug --statsd.mapping-config=/home/statsd-mapping-configs.yaml"]
+    ports:
+      - 9102:9102
+      - 9125:9125
+    expose:
+      - 9125/udp
+    restart: always
+  
+  prometheus:
+    image: prom/prometheus:v2.37.9
+    container_name: prometheus
+    volumes:
+      - ./config_files/prometheus/:/etc/prometheus/
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.external-url=${SERVER_PROMETHEUS_ADDRESS:-http://localhost:9090}'
+    ports:
+      - 9090:9090
+    restart: always
+
+  grafana:
+    image: grafana/grafana:10.0.3-ubuntu
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASS}
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config_files/grafana/etc/grafana/provisioning/dashboards/:/etc/grafana/provisioning/dashboards/
+      - ./config_files/grafana/etc/grafana/provisioning/datasources/:/etc/grafana/provisioning/datasources/
+      - ./config_files/grafana/var/lib/grafana/dashboards/:/var/lib/grafana/dashboards/
+      - ./config_files/grafana/var/lib/grafana/plugins/:/var/lib/grafana/plugins/
+
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+      - /:/host
+    command: 
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc' 
+      - '--path.sysfs=/host/sys'
+      - --collector.filesystem.ignored-mount-points
+      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+    ports:
+      - 9100:9100
+    restart: always
+
+volumes:
+  postgres-db-volume:
+  prometheus_data:
+  grafana_data:
